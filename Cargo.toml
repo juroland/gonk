@@ -60,7 +60,8 @@ esp-backtrace = { version="0.18.1", features=["esp32s3", "println"] }
 
 embedded-graphics = "0.8.1"
 epd-waveshare = "0.6.0"
-embedded-hal-bus = "0.2.0" 
+embedded-hal-bus = "0.2.0"
+ssd1306 = "0.9.0" 
 
 [profile.dev]
 # Rust debug is too slow.
