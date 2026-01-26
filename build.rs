@@ -1,7 +1,12 @@
 fn main() {
-    linker_be_nice();
-    // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)
-    println!("cargo:rustc-link-arg=-Tlinkall.x");
+    // Only apply ESP32-specific linker scripts when building for embedded target
+    let target = std::env::var("TARGET").unwrap();
+    
+    if target.contains("xtensa-esp32") {
+        linker_be_nice();
+        // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)
+        println!("cargo:rustc-link-arg=-Tlinkall.x");
+    }
 }
 
 fn linker_be_nice() {

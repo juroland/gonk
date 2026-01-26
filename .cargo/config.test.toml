@@ -1,0 +1,11 @@
+# .cargo/config.toml - Test configuration
+
+[build]
+target = "xtensa-esp32s3-none-elf"
+
+# When running tests, use host target instead of embedded target
+[target.x86_64-unknown-linux-gnu]
+rustflags = []
+
+[env]
+ESP_LOG_LEVEL = "INFO"

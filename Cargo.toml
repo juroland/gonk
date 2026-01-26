@@ -8,6 +8,14 @@ version      = "0.1.0"
 name = "gonk"
 path = "./src/bin/main.rs"
 
+[[bin]]
+name = "test-hardware"
+path = "./src/bin/test_hardware.rs"
+
+[[bin]]
+name = "test-wifi"
+path = "./src/bin/test_wifi.rs"
+
 [dependencies]
 esp-hal = { version = "~1.0", features = ["esp32s3", "unstable"] }
 
@@ -29,7 +37,6 @@ embassy-net = { version = "0.7.1", features = [
 embedded-io = "0.7.1"
 embedded-io-async = "0.7.0"
 esp-alloc = "0.9.0"
-# for more networking protocol support see https://crates.io/crates/edge-net
 embassy-executor = { version = "0.9.1", features = [] }
 embassy-time = "0.5.0"
 esp-radio = { version = "0.17.0", features = [
@@ -62,6 +69,7 @@ embedded-graphics = "0.8.1"
 epd-waveshare = "0.6.0"
 embedded-hal-bus = "0.2.0"
 ssd1306 = "0.9.0" 
+heapless = "0.9.2"
 
 [profile.dev]
 # Rust debug is too slow.
