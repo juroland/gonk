@@ -9,6 +9,22 @@ use esp_hal::{
     time::Rate,
 };
 
+use embedded_graphics::{
+    mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_6X10},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    primitives::PrimitiveStyle,
+    text::{Baseline, Text, TextStyleBuilder},
+};
+use epd_waveshare::{
+    color::Color,
+    epd2in13_v2::{Display2in13, Epd2in13},
+    prelude::*,
+};
+
+use ssd1306::mode::BufferedGraphicsMode;
+use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
+
 const SPI_FREQ_MHZ: u32 = 10;
 
 #[derive(Debug, Clone, Copy)]
@@ -247,12 +263,15 @@ impl<'a> BMP280Hardware<'a> {
 }
 
 pub struct SSD1306Hardware<'a> {
-    pub i2c: I2c<'a, esp_hal::Blocking>,
-    pub delay: Delay,
+    display: Ssd1306<
+        I2CInterface<I2c<'a, esp_hal::Blocking>>,
+        DisplaySize128x64,
+        BufferedGraphicsMode<DisplaySize128x64>,
+    >,
 }
 
 impl<'a> SSD1306Hardware<'a> {
-    pub fn new<SDA, SCL>(i2c_periph: I2C1<'a>, sda: SDA, scl: SCL) -> Self
+    pub fn new<SDA, SCL>(i2c_periph: I2C1<'a>, sda: SDA, scl: SCL) -> Result<Self, &'static str>
     where
         SDA: Into<AnyPin<'a>>,
         SCL: Into<AnyPin<'a>>,
@@ -265,8 +284,44 @@ impl<'a> SSD1306Hardware<'a> {
         .with_sda(sda.into())
         .with_scl(scl.into());
 
-        let delay = Delay::new();
+        let interface = I2CDisplayInterface::new(i2c);
 
-        Self { i2c, delay }
+        let mut display = Ssd1306::new(
+            interface,
+            DisplaySize128x64,
+            ssd1306::rotation::DisplayRotation::Rotate0,
+        )
+        .into_buffered_graphics_mode();
+
+        display.init().map_err(|_| "Failed to initialize SSD1306")?;
+
+        Ok(Self { display })
+    }
+
+    pub fn clear(&mut self) -> Result<(), &'static str> {
+        self.display
+            .clear(BinaryColor::Off)
+            .map_err(|_| "Failed to clear display")
+    }
+
+    pub fn draw_text(
+        &mut self,
+        text: Text<'_, MonoTextStyle<'_, BinaryColor>>,
+    ) -> Result<(), &'static str> {
+        text.draw(&mut self.display)
+            .map_err(|_| "Failed to draw text")?;
+
+        self.display.flush().map_err(|_| "Failed to flush display")
+    }
+
+    pub fn draw_line(
+        &mut self,
+        line: embedded_graphics::primitives::Line,
+    ) -> Result<(), &'static str> {
+        line.into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(&mut self.display)
+            .map_err(|_| "Failed to draw line")?;
+
+        self.display.flush().map_err(|_| "Failed to flush display")
     }
 }

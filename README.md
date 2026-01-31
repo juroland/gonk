@@ -6,7 +6,7 @@ An ESP32-S3 environmental monitoring device built with Rust and [esp-hal](https:
 
 ## Hardware
 
-- **Microcontroller**: ESP32-S3
+- **Micro-controller**: ESP32-S3
 - **Display**: I2C display (SSD1306)
 - **Sensors**: BMP280 (temperature and pressure)
 - **Connectivity**: WiFi for API access

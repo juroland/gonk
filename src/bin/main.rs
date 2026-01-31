@@ -3,29 +3,38 @@
 
 use core::panic::PanicInfo;
 use embassy_executor::Spawner;
+use embassy_net::{Runner, StackResources};
 use embassy_time::{Duration, Timer};
+use embedded_graphics::prelude::Point;
+use esp_alloc as _;
 use esp_backtrace as _;
-use esp_hal::{delay::Delay, timer::timg::TimerGroup};
+use esp_backtrace as _;
+use esp_hal::{clock::CpuClock, delay::Delay, peripherals, ram, rng::Rng, timer::timg::TimerGroup};
 
-use gonk::{
-    display::{init_epaper, init_ssd1306},
-    hardware::{self, DisplayType},
+use esp_println::{logger, println};
+use esp_radio::{
+    Controller,
+    wifi::{
+        ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
+    },
 };
 
-const HEART_BEAT_INTERVAL_MS: u64 = 5_000;
+use gonk::display;
+use gonk::hardware;
+use gonk::model;
 
-// Choose your display type here
-// DisplayType::EPaper - Uses SPI on GPIO10(CS), GPIO11(MOSI), GPIO12(SCK), GPIO13(DC), GPIO14(RST), GPIO15(BUSY)
-// DisplayType::SSD1306 - Uses I2C on GPIO2(SDA), GPIO1(SCL), address 0x3C
-const DISPLAY_TYPE: DisplayType = DisplayType::SSD1306; // or DisplayType::EPaper
+const HEART_BEAT_INTERVAL_MS: u64 = 5_000;
+const REFRESH_INTERVAL_S: u64 = 60;
+const SSID: &str = env!("SSID");
+const PASSWORD: &str = env!("PASSWORD");
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    esp_println::println!("[PANIC] {:?}", info);
+    println!("[PANIC] {:?}", info);
     let delay = Delay::new();
     loop {
         delay.delay_millis(1_000);
-        esp_println::println!("[PANIC] continue...");
+        println!("[PANIC] continue...");
     }
 }
 
@@ -34,17 +43,208 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[embassy_executor::task]
 async fn run_heartbeat() {
     loop {
-        esp_println::println!("[HEARTBEAT] System is alive");
+        println!("[HEARTBEAT] System is alive");
         Timer::after(Duration::from_millis(HEART_BEAT_INTERVAL_MS)).await;
     }
 }
 
+async fn update_display<'a>(
+    display: &mut display::Display<'a>,
+    model: &'static embassy_sync::mutex::Mutex<
+        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+        model::Model,
+    >,
+) -> Result<(), &'static str> {
+    display.clear()?;
+
+    let line_height = 10;
+    let mut y = 0;
+
+    display.draw_text("Gonk Sensor Readings", 0, 0)?;
+    y += line_height;
+
+    let start = Point {
+        x: 0,
+        y: y + line_height / 2,
+    };
+    let end = Point {
+        x: 127,
+        y: y + line_height / 2,
+    };
+    display.draw_line(start, end)?;
+    y += line_height;
+
+    {
+        let m = model.lock().await;
+        let temp_str: heapless::String<32> =
+            heapless::format!("Temp: {:.2} C", m.temperature).unwrap();
+        display.draw_text(&temp_str, 0, y)?;
+        y += line_height;
+
+        let ip_str: heapless::String<32> = heapless::format!("IP: {}", m.ip_address).unwrap();
+        display.draw_text(&ip_str, 0, y)?;
+    }
+
+    Ok(())
+}
+
+#[embassy_executor::task]
+async fn connection(mut controller: WifiController<'static>) {
+    println!("start connection task");
+    println!("Device capabilities: {:?}", controller.capabilities());
+    loop {
+        match esp_radio::wifi::sta_state() {
+            WifiStaState::Connected => {
+                // wait until we're no longer connected
+                controller.wait_for_event(WifiEvent::StaDisconnected).await;
+                Timer::after(Duration::from_millis(5000)).await
+            }
+            _ => {}
+        }
+        if !matches!(controller.is_started(), Ok(true)) {
+            let client_config = ModeConfig::Client(
+                ClientConfig::default()
+                    .with_ssid(SSID.into())
+                    .with_password(PASSWORD.into()),
+            );
+            controller.set_config(&client_config).unwrap();
+            println!("Starting wifi");
+            controller.start_async().await.unwrap();
+            println!("Wifi started!");
+
+            println!("Scan");
+            let scan_config = ScanConfig::default().with_max(10);
+            let result = controller
+                .scan_with_config_async(scan_config)
+                .await
+                .unwrap();
+            for ap in result {
+                println!("{:?}", ap);
+            }
+        }
+        println!("About to connect...");
+
+        match controller.connect_async().await {
+            Ok(_) => println!("Wifi connected!"),
+            Err(e) => {
+                println!("Failed to connect to wifi: {e:?}");
+                Timer::after(Duration::from_millis(5000)).await
+            }
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
+    runner.run().await
+}
+
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
+async fn init_wifi(
+    spawner: Spawner,
+    device: peripherals::WIFI<'static>,
+    model: &'static embassy_sync::mutex::Mutex<
+        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+        model::Model,
+    >,
+) {
+    esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
+    esp_alloc::heap_allocator!(size: 36 * 1024);
+
+    let esp_radio_ctrl = &*mk_static!(Controller<'static>, esp_radio::init().unwrap());
+
+    let (controller, interfaces) =
+        esp_radio::wifi::new(&esp_radio_ctrl, device, Default::default()).unwrap();
+
+    let wifi_interface = interfaces.sta;
+
+    let config = embassy_net::Config::dhcpv4(Default::default());
+
+    let rng = Rng::new();
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+
+    // Init network stack
+    let (stack, runner) = embassy_net::new(
+        wifi_interface,
+        config,
+        mk_static!(StackResources<3>, StackResources::<3>::new()),
+        seed,
+    );
+
+    spawner.spawn(connection(controller)).ok();
+    spawner.spawn(net_task(runner)).ok();
+
+    let mut rx_buffer = [0; 4096];
+    let mut tx_buffer = [0; 4096];
+
+    loop {
+        if stack.is_link_up() {
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
+    println!("[INFO] Waiting to get IP address...");
+    loop {
+        if let Some(config) = stack.config_v4() {
+            println!("[INFO] Got IP: {}", config.address);
+            {
+                let mut m = model.lock().await;
+                m.ip_address = heapless::format!("{}", config.address)
+                    .unwrap_or_else(|_| heapless::String::try_from("INVALID").unwrap());
+            }
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+}
+
+async fn update_model<'a>(
+    model: &'static embassy_sync::mutex::Mutex<
+        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+        model::Model,
+    >,
+    bmp280: &mut hardware::BMP280Hardware<'a>,
+) -> Result<(), &'static str> {
+    let mut m = model.lock().await;
+
+    match bmp280.read_temperature() {
+        Ok(temp) => {
+            println!("[BMP280] Temperature: {:.2}°C", temp);
+            m.temperature = temp;
+        }
+        Err(e) => {
+            println!("[BMP280] Read error: {}", e);
+            m.temperature = -999.0;
+        }
+    }
+
+    Ok(())
+}
+
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    esp_println::logger::init_logger_from_env();
-    let peripherals = esp_hal::init(esp_hal::Config::default());
+    logger::init_logger_from_env();
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
 
-    esp_println::println!("=== Gonk ===");
+    let model = mk_static!(
+        embassy_sync::mutex::Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, model::Model>,
+        embassy_sync::mutex::Mutex::new(model::Model {
+            temperature: 0.0,
+            ip_address: heapless::String::try_from("UNKNOWN").unwrap(),
+        })
+    );
+
+    println!("=== Gonk ===");
 
     // Initialize RTOS timer for embassy
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -52,51 +252,38 @@ async fn main(spawner: Spawner) {
 
     // Spawn the background heartbeat task
     if let Err(e) = spawner.spawn(run_heartbeat()) {
-        esp_println::println!("[ERROR] Failed to spawn task: {:?}", e);
+        println!("[ERROR] Failed to spawn task: {:?}", e);
     }
 
+    init_wifi(spawner, peripherals.WIFI, model).await;
+
     // Initialize BMP280 sensor
-    esp_println::println!("=== BMP280 Temperature Sensor ===");
+    println!("=== BMP280 Temperature Sensor ===");
     let mut bmp280 =
         hardware::BMP280Hardware::new(peripherals.I2C0, peripherals.GPIO8, peripherals.GPIO9);
 
     if let Err(e) = bmp280.init() {
-        esp_println::println!("[ERROR] BMP280 init failed: {}", e);
+        println!("[ERROR] BMP280 init failed: {}", e);
         loop {
             Timer::after(Duration::from_secs(1)).await;
         }
     }
 
-    // Initialize display based on chosen type
-    match DISPLAY_TYPE {
-        DisplayType::EPaper => {
-            let display = hardware::DisplayHardware::new(
-                peripherals.SPI2,
-                peripherals.GPIO10,
-                peripherals.GPIO11,
-                peripherals.GPIO12,
-                peripherals.GPIO13,
-                peripherals.GPIO14,
-                peripherals.GPIO15,
-            );
-            let _ = init_epaper(display);
-        }
-        DisplayType::SSD1306 => {
-            let display = hardware::SSD1306Hardware::new(
-                peripherals.I2C1,
-                peripherals.GPIO2,
-                peripherals.GPIO1,
-            );
-            let _ = init_ssd1306(display);
-        }
-    }
+    let display_hardware =
+        hardware::SSD1306Hardware::new(peripherals.I2C1, peripherals.GPIO2, peripherals.GPIO1)
+            .unwrap();
+
+    let mut display = display::Display::new(display_hardware);
 
     loop {
-        match bmp280.read_temperature() {
-            Ok(temp) => esp_println::println!("[BMP280] Temperature: {:.2}°C", temp),
-            Err(e) => esp_println::println!("[BMP280] Read error: {}", e),
+        if let Err(e) = update_model(model, &mut bmp280).await {
+            println!("[ERROR] Display update failed: {}", e);
         }
 
-        Timer::after(Duration::from_secs(2)).await;
+        if let Err(e) = update_display(&mut display, model).await {
+            println!("[ERROR] Display update failed: {}", e);
+        }
+
+        Timer::after(Duration::from_secs(REFRESH_INTERVAL_S)).await;
     }
 }
