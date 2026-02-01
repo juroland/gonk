@@ -8,7 +8,7 @@ An ESP32-S3 environmental monitoring device built with Rust and [esp-hal](https:
 
 - **Micro-controller**: ESP32-S3
 - **Display**: I2C display (SSD1306)
-- **Sensors**: BMP280 (temperature and pressure)
+- **Sensors**: BME280 (temperature, humidity and pressure)
 - **Connectivity**: WiFi for API access
 
 Custom enclosure created with FreeCAD will be shared in the `/models` directory.
@@ -47,7 +47,7 @@ make flash BIN=<name>  # Flash specific binary
 
 - [x] Basic project setup
 - [x] Display integration (SSD1306)
-- [x] Temperature sensor (BMP280)
+- [x] Temperature sensor (BME280)
 - [x] WiFi connectivity
 - [ ] Real-time clock
 - [ ] OpenWeather API integration

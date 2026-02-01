@@ -7,7 +7,7 @@ use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::{delay::Delay, timer::timg::TimerGroup};
 
-use gonk::{hardware::BMP280Hardware, logic::AppLogic};
+use gonk::{hardware::BME280Hardware, logic::AppLogic};
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -163,7 +163,7 @@ fn test_app_logic(results: &mut TestResults) {
     results.assert(formatted.contains("Comfortable"), "format contains status");
 }
 
-async fn test_bmp280_sensor<SDA, SCL>(
+async fn test_bme280_sensor<SDA, SCL>(
     results: &mut TestResults,
     i2c0: esp_hal::peripherals::I2C0<'static>,
     sda: SDA,
@@ -172,26 +172,26 @@ async fn test_bmp280_sensor<SDA, SCL>(
     SDA: Into<esp_hal::gpio::AnyPin<'static>>,
     SCL: Into<esp_hal::gpio::AnyPin<'static>>,
 {
-    esp_println::println!("\n[TEST] BMP280 Sensor Tests");
+    esp_println::println!("\n[TEST] BME280 Sensor Tests");
 
-    // Create BMP280 hardware interface
-    let mut bmp280 = BMP280Hardware::new(i2c0, sda, scl);
+    // Create BME280 hardware interface
+    let mut bme280 = BME280Hardware::new(i2c0, sda, scl);
 
     // Test I2C scan
     esp_println::println!("  Running I2C scan...");
-    bmp280.scan();
+    bme280.scan();
     results.assert(true, "I2C scan completed");
 
     // Test initialization
-    match bmp280.init() {
+    match bme280.init() {
         Ok(_) => {
-            results.assert(true, "BMP280 initialization");
+            results.assert(true, "BME280 initialization");
 
             // Test chip ID read
-            match bmp280.read_chip_id() {
+            match bme280.read_chip_id() {
                 Ok(chip_id) => {
                     esp_println::println!("    Chip ID: 0x{:02X}", chip_id);
-                    results.assert_eq(chip_id, 0x58, "BMP280 chip ID is 0x58");
+                    results.assert_eq(chip_id, 0x58, "BME280 chip ID is 0x58");
                 }
                 Err(e) => {
                     esp_println::println!("    Failed to read chip ID: {}", e);
@@ -204,7 +204,7 @@ async fn test_bmp280_sensor<SDA, SCL>(
             let mut temps = heapless::Vec::<f32, 5>::new();
             for i in 0..5 {
                 Timer::after(Duration::from_millis(100)).await;
-                match bmp280.read_temperature() {
+                match bme280.read_temperature() {
                     Ok(temp) => {
                         esp_println::println!("    Sample {}: {:.2}°C", i + 1, temp);
                         let _ = temps.push(temp);
@@ -231,8 +231,8 @@ async fn test_bmp280_sensor<SDA, SCL>(
             }
         }
         Err(e) => {
-            esp_println::println!("  Failed to initialize BMP280: {}", e);
-            results.assert(false, "BMP280 initialization");
+            esp_println::println!("  Failed to initialize BME280: {}", e);
+            results.assert(false, "BME280 initialization");
         }
     }
 }
@@ -261,7 +261,7 @@ async fn main(spawner: Spawner) {
     esp_rtos::start(timg0.timer0);
 
     // Run hardware tests
-    test_bmp280_sensor(&mut results, i2c0, gpio8, gpio9).await;
+    test_bme280_sensor(&mut results, i2c0, gpio8, gpio9).await;
 
     // Print summary
     results.print_summary();

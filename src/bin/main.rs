@@ -81,6 +81,11 @@ async fn update_display<'a>(
         display.draw_text(&temp_str, 0, y)?;
         y += line_height;
 
+        let humidity_str: heapless::String<32> =
+            heapless::format!("Humidity: {:.2} %", m.humidity).unwrap();
+        display.draw_text(&humidity_str, 0, y)?;
+        y += line_height;
+
         let ip_str: heapless::String<32> = heapless::format!("IP: {}", m.ip_address).unwrap();
         display.draw_text(&ip_str, 0, y)?;
     }
@@ -212,17 +217,20 @@ async fn update_model<'a>(
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
         model::Model,
     >,
-    bmp280: &mut hardware::BMP280Hardware<'a>,
+    bme280: &mut hardware::BME280Hardware<'a>,
 ) -> Result<(), &'static str> {
     let mut m = model.lock().await;
 
-    match bmp280.read_temperature() {
-        Ok(temp) => {
-            println!("[BMP280] Temperature: {:.2}°C", temp);
-            m.temperature = temp;
+    match bme280.read() {
+        Ok(measurements) => {
+            m.humidity = measurements.humidity;
+            m.pressure = measurements.pressure;
+            m.temperature = measurements.temperature;
         }
         Err(e) => {
-            println!("[BMP280] Read error: {}", e);
+            println!("[BME280] Read error: {:?}", e);
+            m.humidity = -999.0;
+            m.pressure = -999.0;
             m.temperature = -999.0;
         }
     }
@@ -240,6 +248,8 @@ async fn main(spawner: Spawner) {
         embassy_sync::mutex::Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, model::Model>,
         embassy_sync::mutex::Mutex::new(model::Model {
             temperature: 0.0,
+            pressure: 0.0,
+            humidity: 0.0,
             ip_address: heapless::String::try_from("UNKNOWN").unwrap(),
         })
     );
@@ -257,17 +267,10 @@ async fn main(spawner: Spawner) {
 
     init_wifi(spawner, peripherals.WIFI, model).await;
 
-    // Initialize BMP280 sensor
-    println!("=== BMP280 Temperature Sensor ===");
-    let mut bmp280 =
-        hardware::BMP280Hardware::new(peripherals.I2C0, peripherals.GPIO8, peripherals.GPIO9);
-
-    if let Err(e) = bmp280.init() {
-        println!("[ERROR] BMP280 init failed: {}", e);
-        loop {
-            Timer::after(Duration::from_secs(1)).await;
-        }
-    }
+    // Initialize BME280 sensor
+    println!("=== BME280 Temperature Sensor ===");
+    let mut bme280 =
+        hardware::BME280Hardware::new(peripherals.I2C0, peripherals.GPIO8, peripherals.GPIO9);
 
     let display_hardware =
         hardware::SSD1306Hardware::new(peripherals.I2C1, peripherals.GPIO2, peripherals.GPIO1)
@@ -276,7 +279,7 @@ async fn main(spawner: Spawner) {
     let mut display = display::Display::new(display_hardware);
 
     loop {
-        if let Err(e) = update_model(model, &mut bmp280).await {
+        if let Err(e) = update_model(model, &mut bme280).await {
             println!("[ERROR] Display update failed: {}", e);
         }
 
