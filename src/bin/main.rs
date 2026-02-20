@@ -9,7 +9,15 @@ use embedded_graphics::prelude::Point;
 use esp_alloc as _;
 use esp_backtrace as _;
 use esp_backtrace as _;
-use esp_hal::{clock::CpuClock, delay::Delay, peripherals, ram, rng::Rng, timer::timg::TimerGroup};
+use esp_hal::{
+    analog::adc::{Adc, AdcConfig, Attenuation},
+    clock::CpuClock,
+    delay::Delay,
+    peripherals, ram,
+    rng::Rng,
+    timer::timg::TimerGroup,
+    uart::{Config, Uart},
+};
 
 use esp_println::{logger, println};
 use esp_radio::{
@@ -24,19 +32,9 @@ use gonk::hardware;
 use gonk::model;
 
 const HEART_BEAT_INTERVAL_MS: u64 = 5_000;
-const REFRESH_INTERVAL_S: u64 = 60;
+const REFRESH_INTERVAL_S: u64 = 6;
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
-
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    println!("[PANIC] {:?}", info);
-    let delay = Delay::new();
-    loop {
-        delay.delay_millis(1_000);
-        println!("[PANIC] continue...");
-    }
-}
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -278,6 +276,11 @@ async fn main(spawner: Spawner) {
 
     let mut display = display::Display::new(display_hardware);
 
+    // --- ADC setup for GPIO1 (ADC1) ---
+    let mut adc_config = AdcConfig::new();
+    let mut adc_pin = adc_config.enable_pin(peripherals.GPIO4, Attenuation::_11dB);
+    let mut adc = Adc::new(peripherals.ADC1, adc_config);
+
     loop {
         if let Err(e) = update_model(model, &mut bme280).await {
             println!("[ERROR] Display update failed: {}", e);
@@ -287,6 +290,22 @@ async fn main(spawner: Spawner) {
             println!("[ERROR] Display update failed: {}", e);
         }
 
+        // Read raw ADC
+        let raw = match adc.read_oneshot(&mut adc_pin) {
+            Ok(value) => value,
+            Err(e) => {
+                println!("[ADC] Read error: {:?}", e);
+                Timer::after(Duration::from_secs(REFRESH_INTERVAL_S)).await;
+                continue;
+            }
+        };
+
+        // Convert to voltage
+        let vadc = (raw as f32) * 3.3 / 4095.0;
+        // Divider correction: Vin = Vadc * (Rtop+Rbottom)/Rbottom = Vadc * 133/100
+        let vin = vadc * 1.33;
+
+        println!("[ADC] raw={} Vadc≈{:.3}V Vin≈{:.3}V", raw, vadc, vin);
         Timer::after(Duration::from_secs(REFRESH_INTERVAL_S)).await;
     }
 }
